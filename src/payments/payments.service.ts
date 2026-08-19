@@ -1,14 +1,8 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  type RawBodyRequest,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { envs } from '../config/envs';
 import Stripe from 'stripe';
 import { PaymentSessionDto } from './dto/payment-session.dto';
-import type { Request, Response } from 'express';
-import { ClientProxy } from '@nestjs/microservices';
+import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { NATS_SERVICE } from '../config';
 
 @Injectable()
@@ -56,36 +50,28 @@ export class PaymentsService {
     };
   }
 
-  success() {
-    return { message: 'Payment successful' };
-  }
-
-  cancel() {
-    return { message: 'Payment canceled' };
-  }
-
-  async webhook() {
-    return { message: 'Webhook received' };
-  }
-
-  async stripeWebhook(request: RawBodyRequest<Request>, response: Response) {
-    const signature = request.headers['stripe-signature'];
+  async stripeWebhook(data: { rawBody: string; signature: string }) {
+    const { rawBody, signature } = data;
     let event: Stripe.Event;
     try {
+      // Verify the webhook signature in Base64 to ensure the request is from Stripe and has not been tampered with
+      const rawBuffer = Buffer.from(rawBody, 'base64');
       event = this.stripe.webhooks.constructEvent(
-        request.rawBody as Buffer,
-        signature as string,
+        rawBuffer,
+        signature,
         envs.webhookSignatureSecret,
       );
     } catch (err: unknown) {
-      console.log(
-        `Webhook signature verification failed.`,
-        (err as Error).message,
+      this.logger.error(
+        `Webhook signature verification failed: ${(err as Error).message}`,
       );
-      return response.sendStatus(400);
+      throw new RpcException({
+        status: 400,
+        message: `Webhook signature verification failed: ${(err as Error).message}`,
+      });
     }
 
-    // Handle the event
+    // Handle the event based on its type and emit relevant events to the NATS message broker
     switch (event.type) {
       case 'charge.succeeded': {
         const chargeSucceeded = event.data.object;
@@ -95,25 +81,30 @@ export class PaymentsService {
           receiptUrl: chargeSucceeded.receipt_url,
         };
 
-        // Emit the payment succeeded event to NATS, which will be handled by the orders microservice
+        // Emit a message to the NATS message broker indicating that the payment has succeeded
         this.client.emit('payment.succeeded', payload);
-
-        this.success();
         break;
       }
 
       case 'payment_intent.payment_failed': {
         const failedPaymentIntent = event.data.object;
-        console.log('Payment failed:', failedPaymentIntent.metadata);
-        this.cancel();
+        const payload = {
+          orderId: failedPaymentIntent.metadata?.orderId,
+          errorMessage: failedPaymentIntent.last_payment_error?.message,
+        };
+
+        // Emit a message to the NATS message broker indicating that the payment has failed
+        this.client.emit('payment.failed', payload);
+
+        this.logger.warn(
+          `Payment failed for order: ${failedPaymentIntent.metadata?.orderId}`,
+        );
         break;
       }
-      default:
-        console.log(`Unhandled event type ${event.type}`);
-        this.cancel();
-    }
 
-    // Return a response to acknowledge receipt of the event
-    response.json({ received: true });
+      default:
+        this.logger.log(`Unhandled event type: ${event.type}`);
+    }
+    return { received: true };
   }
 }
