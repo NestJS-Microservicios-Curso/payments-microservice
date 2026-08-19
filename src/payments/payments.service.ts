@@ -1,13 +1,26 @@
-import { Injectable, type RawBodyRequest } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type RawBodyRequest,
+} from '@nestjs/common';
 import { envs } from '../config/envs';
 import Stripe from 'stripe';
 import { PaymentSessionDto } from './dto/payment-session.dto';
 import type { Request, Response } from 'express';
+import { ClientProxy } from '@nestjs/microservices';
+import { NATS_SERVICE } from '../config';
 
 @Injectable()
 export class PaymentsService {
   // Initialize Stripe with the secret key from environment variables
   private readonly stripe = new Stripe(envs.stripeSecretKey);
+  private readonly logger = new Logger('PaymentsService');
+
+  constructor(
+    @Inject(NATS_SERVICE)
+    private readonly client: ClientProxy,
+  ) {}
 
   async createPaymentSession(paymentSessionDto: PaymentSessionDto) {
     const { orderId, currency, items } = paymentSessionDto;
@@ -34,8 +47,13 @@ export class PaymentsService {
       cancel_url: envs.stripeCancelUrl, // Redirect URL if the payment is canceled
     });
 
-    // Return the URL of the created session to the client, which can be used to redirect the user to the Stripe Checkout page
-    return { url: session.url };
+    // Return the session details including the URLs for success and cancellation,
+    // and the session URL for the client to redirect to Stripe's checkout page
+    return {
+      cancelUrl: session.cancel_url,
+      successUrl: session.success_url,
+      url: session.url,
+    };
   }
 
   success() {
@@ -71,7 +89,15 @@ export class PaymentsService {
     switch (event.type) {
       case 'charge.succeeded': {
         const chargeSucceeded = event.data.object;
-        console.log('Charge succeeded:', chargeSucceeded.metadata);
+        const payload = {
+          stripePaymentId: chargeSucceeded.id,
+          orderId: chargeSucceeded.metadata.orderId,
+          receiptUrl: chargeSucceeded.receipt_url,
+        };
+
+        // Emit the payment succeeded event to NATS, which will be handled by the orders microservice
+        this.client.emit('payment.succeeded', payload);
+
         this.success();
         break;
       }
