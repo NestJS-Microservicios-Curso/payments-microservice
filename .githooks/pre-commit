@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+files=()
+eslint_files=()
+while IFS= read -r file; do
+	files+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.json')
+while IFS= read -r file; do
+	eslint_files+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx' '*.js' '*.jsx')
+((${#files[@]})) || exit 0
+stash_ref=''
+if ! git diff --quiet --; then
+	stash_before=$(git rev-parse -q --verify refs/stash || :)
+	git stash push --quiet --keep-index -- . || {
+		echo 'pre-commit: cannot preserve unstaged changes' >&2
+		exit 1
+	}
+	stash_after=$(git rev-parse -q --verify refs/stash || :)
+	if [[ -z "$stash_after" || "$stash_after" == "$stash_before" ]]; then
+		echo 'pre-commit: unstaged changes were not stashed; refusing to continue' >&2
+		exit 1
+	fi
+	stash_ref=$stash_after
+fi
+restored=0
+restore() {
+	((restored)) || {
+		if [[ -n "$stash_ref" ]]; then
+			git stash pop --quiet "$stash_ref" || {
+				echo "pre-commit: restore failed for $stash_ref; recover with git stash apply $stash_ref, then git stash drop $stash_ref after verifying the result" >&2
+				return 1
+			}
+		fi
+		restored=1
+	}
+}
+trap restore EXIT
+./node_modules/.bin/prettier --write -- "${files[@]}"
+if ((${#eslint_files[@]})); then
+	./node_modules/.bin/eslint --fix -- "${eslint_files[@]}"
+fi
+git add -- "${files[@]}"
+./node_modules/.bin/prettier --check -- "${files[@]}"
+if ((${#eslint_files[@]})); then
+	./node_modules/.bin/eslint --quiet -- "${eslint_files[@]}"
+fi

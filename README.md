@@ -68,3 +68,14 @@ npm run start:prod
 - **Payment Provider**: [Stripe SDK](https://stripe.com/)
 - **Validation**: `class-validator` & `class-transformer`
 - **Configuration & Validation**: `dotenv` & [Joi](https://joi.dev/)
+
+## Git hooks and formatting
+
+Install dependencies, then activate the versioned hook from this service repository:
+
+```bash
+npm install
+npm run hooks:install
+```
+
+The hook only processes staged JavaScript/TypeScript/JSON files, runs Prettier and ESLint autofixes, re-stages those files, and aborts if errors remain. It temporarily hides unstaged tracked edits and restores only the stash created by this run after the check, so unrelated work is not staged; if restoration conflicts, the hook reports the exact stash reference for manual recovery.
