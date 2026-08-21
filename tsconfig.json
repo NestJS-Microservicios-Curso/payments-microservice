@@ -20,9 +20,10 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": false,
     "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false
+    "noFallthroughCasesInSwitch": false,
+    "types": ["node", "jest"]
   },
-  "exclude": ["src/**/*.spec.ts", "test/**/*.ts", "dist"],
+  "exclude": ["test/**/*.ts", "dist"],
   "watchOptions": {
     "watchFile": "fixedPollingInterval"
   }
